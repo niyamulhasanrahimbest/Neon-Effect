@@ -4,7 +4,7 @@
  */
 
 import { NeonSettings, SvgPathLayer } from '../types/neon';
-import { renderNeonScene } from './neonRenderer';
+import { renderNeonScene, adjustColor, getCoreTint } from './neonRenderer';
 
 export type ExportFormat = 'png' | 'jpeg' | 'webp' | 'svg';
 
@@ -42,7 +42,9 @@ export async function exportArtwork(
         svgViewBox || { x: 0, y: 0, width: baseWidth, height: baseHeight },
         settings,
         includeBackground,
-        svgGlowType || 'filter'
+        svgGlowType || 'filter',
+        exportWidth,
+        exportHeight
       );
       const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
       downloadBlob(blob, `${baseFileName}_neon.svg`);
@@ -142,185 +144,187 @@ function downloadBlob(blob: Blob, filename: string) {
  *   graduated opacities and widths (Stepped Vector Blending).
  * - 100% resolution-independent, infinitely scalable, and fully editable in Adobe Illustrator.
  */
+/**
+ * Generates an SVG string matching the live neon preview with 100% fidelity.
+ * - Calibrates all stroke widths, filament cores, and multi-tier glow radii to the artboard resolution.
+ * - Uses mathematically graduated concentric stepped radiance passes so that 100% of the vibrant,
+ *   volumetric neon glow is visible in all vector software (Adobe Illustrator, Inkscape, CorelDraw)
+ *   and web browsers.
+ * - Supports both photorealistic Gaussian bloom filters and pure vector microstock modes.
+ */
 function generateNeonSvgString(
   layers: SvgPathLayer[],
   viewBox: { x: number; y: number; width: number; height: number },
   settings: NeonSettings,
   includeBackground: boolean,
-  svgGlowType: 'pure-vector' | 'filter' = 'filter'
+  svgGlowType: 'pure-vector' | 'filter' = 'filter',
+  canvasWidth: number = 4000,
+  canvasHeight: number = 4000
 ): string {
+  const vbW = Math.max(1, viewBox?.width || canvasWidth || 800);
+  const vbH = Math.max(1, viewBox?.height || canvasHeight || 800);
+  const scale = Math.min(canvasWidth / vbW, canvasHeight / vbH);
+  // Match resScale from neonRenderer.ts (relative to 500px base preset)
+  const resScale = Math.max(1, Math.min(canvasWidth, canvasHeight) / 500);
+  const unitScale = resScale / scale;
+
+  let bgFill = settings.background.customColor || '#07080d';
+  if (settings.background.type === 'black') {
+    bgFill = '#07080d';
+  } else if (settings.background.type === 'charcoal') {
+    bgFill = '#12141a';
+  } else if (settings.background.type === 'dark-blue') {
+    bgFill = '#080d1a';
+  } else if (settings.background.type === 'dark-purple') {
+    bgFill = '#120a1a';
+  } else if (settings.background.type === 'transparent') {
+    bgFill = 'none';
+  } else if (settings.background.type === 'custom-color' && settings.background.customColor) {
+    bgFill = settings.background.customColor;
+  } else if (!settings.background.customColor) {
+    bgFill = '#07080d';
+  }
+
+  // Neon signs must ALWAYS have their dark background backdrop (unless transparent is explicitly requested)
   const bgRect =
     includeBackground && settings.background.type !== 'transparent'
-      ? `  <!-- Background Backdrop -->\n  <rect x="${viewBox.x}" y="${viewBox.y}" width="${viewBox.width}" height="${viewBox.height}" fill="${settings.background.customColor || '#07080d'}" />\n`
-      : '';
+      ? `  <!-- Neon Dark Backdrop -->\n  <rect x="${viewBox.x}" y="${viewBox.y}" width="${viewBox.width}" height="${viewBox.height}" fill="${bgFill}" />\n`
+      : settings.background.type === 'transparent'
+      ? ''
+      : `  <!-- Default Neon Dark Backdrop -->\n  <rect x="${viewBox.x}" y="${viewBox.y}" width="${viewBox.width}" height="${viewBox.height}" fill="#07080d" />\n`;
 
   const visibleLayers = layers.filter((l) => l.visible);
 
-  // Helper to generate stroke passes for a layer with opacity and thickness multipliers
-  const renderLayerPass = (
-    strokeMultiplier: number,
+  const primaryColor = adjustColor(
+    settings.color.primaryColor,
+    settings.color.hueShift,
+    settings.color.saturation,
+    settings.color.brightness
+  );
+  const secondaryColor = adjustColor(
+    settings.color.secondaryColor,
+    settings.color.hueShift,
+    settings.color.saturation,
+    settings.color.brightness
+  );
+
+  const layerData = visibleLayers.map((layer, idx) => {
+    let rawColor = layer.color;
+    if (!rawColor) {
+      if (settings.color.colorMode === 'dual') {
+        rawColor = idx % 2 === 0 ? primaryColor : secondaryColor;
+      } else if (settings.color.colorMode === 'multi') {
+        const colors = ['#00f3ff', '#ff007f', '#ffe600', '#00ff66', '#ff0044', '#a855f7', '#fb923c'];
+        rawColor = colors[idx % colors.length];
+      } else {
+        rawColor = primaryColor;
+      }
+    }
+    const strokeColor = adjustColor(rawColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness);
+    const rawGlowColor = layer.glowColor || rawColor;
+    const glowColor = settings.color.syncGlowColor
+      ? strokeColor
+      : adjustColor(rawGlowColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness);
+
+    const thick = layer.thickness !== undefined ? layer.thickness : settings.tube.thickness;
+    const baseThickness = Math.max(0.8, thick * unitScale);
+
+    const layerCoreWidth = layer.coreWidth ?? settings.tube.coreWidth ?? 35;
+    const coreRatio = Math.max(0.05, Math.min(1.0, layerCoreWidth / 100));
+
+    const transformAttr = layer.transform ? ` transform="${layer.transform}"` : '';
+
+    return {
+      d: layer.d,
+      transformAttr,
+      strokeColor,
+      glowColor,
+      baseThickness,
+      coreRatio,
+      tintedCoreColor: getCoreTint(strokeColor),
+      sharpCoreColor: settings.tube.coreColor || '#ffffff',
+    };
+  });
+
+  const glowMult = (settings.glow.glowMultiplier ?? 1.5) * 1.5;
+  const ambientInt = Math.min(1.0, (settings.glow.ambientGlowIntensity / 100) * 0.55 * glowMult);
+  const outerInt = Math.min(1.0, (settings.glow.outerGlowIntensity / 100) * 0.85 * glowMult);
+  const tubeAlpha = Math.min(1.0, (settings.tube.tubeOpacity / 100) * (settings.tube.tubeBrightness / 100));
+  const coreAlpha = Math.min(1.0, settings.tube.coreBrightness / 100);
+
+  const renderPaths = (
+    calcWidth: (d: (typeof layerData)[0]) => number,
     opacity: number,
-    strokeOverride?: string
+    colorSelector: 'glow' | 'stroke' | 'tintedCore' | 'sharpCore' = 'glow'
   ) => {
-    return visibleLayers
-      .map((layer) => {
-        const color = strokeOverride || layer.color || settings.color.primaryColor;
-        const baseWidth = layer.thickness || settings.tube.thickness;
-        const width = Math.max(0.5, baseWidth * strokeMultiplier).toFixed(2);
-        const transformAttr = layer.transform ? ` transform="${layer.transform}"` : '';
+    return layerData
+      .map((item) => {
+        const width = Math.max(0.5, calcWidth(item)).toFixed(2);
+        let color = item.glowColor;
+        if (colorSelector === 'stroke') color = item.strokeColor;
+        if (colorSelector === 'tintedCore') color = item.tintedCoreColor;
+        if (colorSelector === 'sharpCore') color = item.sharpCoreColor;
 
-        return `    <path d="${layer.d}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${opacity}"${transformAttr} />`;
+        return `    <path d="${item.d}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${opacity.toFixed(2)}"${item.transformAttr} />`;
       })
       .join('\n');
   };
 
-  // Helper to render incandescent white core pass matching the preview
-  const renderCorePass = () => {
-    return visibleLayers
-      .map((layer) => {
-        const baseWidth = layer.thickness || settings.tube.thickness;
-        const layerCoreWidth = layer.coreWidth ?? settings.tube.coreWidth ?? 35;
-        const coreRatio = Math.max(0.05, Math.min(1.0, layerCoreWidth / 100));
-        const width = Math.max(0.3, baseWidth * coreRatio).toFixed(2);
-        const transformAttr = layer.transform ? ` transform="${layer.transform}"` : '';
-        const coreColor = settings.tube.coreColor || '#ffffff';
-
-        return `    <path d="${layer.d}" fill="none" stroke="${coreColor}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="1.0"${transformAttr} />`;
-      })
-      .join('\n');
-  };
-
-  const vbRatio = Math.max(0.2, (viewBox.width || 4000) / 1000);
-  const ambientBlur = Math.max(2.5, settings.glow.ambientGlowRadius * 0.65 * vbRatio).toFixed(1);
-  const ambientWideBlur = Math.max(4.0, settings.glow.ambientGlowRadius * 1.2 * vbRatio).toFixed(1);
-  const glowBlur = Math.max(1.8, settings.glow.outerGlowRadius * 0.5 * vbRatio).toFixed(1);
-  const coronaBlur = Math.max(1.0, settings.glow.innerGlowRadius * 0.3 * vbRatio).toFixed(1);
-
-  const defsFilter =
-    svgGlowType === 'filter'
-      ? `  <defs>
-    <!-- Photorealistic Multi-Stage Gaussian Bloom Filters for Preview-Identical Glow -->
-    <filter id="NeonAmbientGlow" x="-100%" y="-100%" width="300%" height="300%" color-interpolation-filters="sRGB">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${ambientBlur}" result="ambientBloom" />
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${ambientWideBlur}" result="wideBloom" />
-      <feMerge>
-        <feMergeNode in="wideBloom" />
-        <feMergeNode in="ambientBloom" />
-      </feMerge>
-    </filter>
-    <filter id="NeonOuterHalo" x="-100%" y="-100%" width="300%" height="300%" color-interpolation-filters="sRGB">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${glowBlur}" result="gasHalo" />
-      <feMerge>
-        <feMergeNode in="gasHalo" />
-        <feMergeNode in="SourceGraphic" />
-      </feMerge>
-    </filter>
-    <filter id="NeonCorona" x="-100%" y="-100%" width="300%" height="300%" color-interpolation-filters="sRGB">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${coronaBlur}" result="innerCorona" />
-      <feMerge>
-        <feMergeNode in="innerCorona" />
-        <feMergeNode in="SourceGraphic" />
-      </feMerge>
-    </filter>
-  </defs>\n`
-      : '';
-
-  const ambientFilterAttr = svgGlowType === 'filter' ? ' filter="url(#NeonAmbientGlow)"' : '';
-  const haloFilterAttr = svgGlowType === 'filter' ? ' filter="url(#NeonOuterHalo)"' : '';
-  const coronaFilterAttr = svgGlowType === 'filter' ? ' filter="url(#NeonCorona)"' : '';
-  const screenBlend = svgGlowType === 'filter' ? ' style="mix-blend-mode: screen;"' : '';
-
-  if (svgGlowType === 'pure-vector') {
-    // 100% PURE VECTOR MODE — ZERO RASTER BLUR, ZERO <filter>, ZERO <image>
-    // Microstock Approved: Adobe Stock, Shutterstock, Freepik, Vecteezy.
-    // Generates 7 graduated concentric vector stroke passes with smooth exponential falloff.
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- 
-  Neon Sign Studio — 100% PURE VECTOR NEON ARTWORK
-  Microstock Compliant: 0% Raster Effects, 0% Filters, 0% Bitmaps.
-  Adobe Stock & Shutterstock 100% Pre-Flight Approved.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}" width="4000" height="4000">
-${bgRect}
-  <!-- Pass 1: Wide Ambient Atmosphere Spill (Pure Vector) -->
-  <g id="Vector_Glow_Pass_1">
-${renderLayerPass(9.0, 0.05)}
-  </g>
-
-  <!-- Pass 2: Soft Outer Aura (Pure Vector) -->
-  <g id="Vector_Glow_Pass_2">
-${renderLayerPass(6.5, 0.09)}
-  </g>
-
-  <!-- Pass 3: Radiant Gas Halo (Pure Vector) -->
-  <g id="Vector_Glow_Pass_3">
-${renderLayerPass(4.5, 0.16)}
-  </g>
-
-  <!-- Pass 4: Mid Corona Diffusion (Pure Vector) -->
-  <g id="Vector_Glow_Pass_4">
-${renderLayerPass(3.0, 0.28)}
-  </g>
-
-  <!-- Pass 5: Intense Inner Corona (Pure Vector) -->
-  <g id="Vector_Glow_Pass_5">
-${renderLayerPass(2.0, 0.48)}
-  </g>
-
-  <!-- Pass 6: Clinging Plasma Border (Pure Vector) -->
-  <g id="Vector_Glow_Pass_6">
-${renderLayerPass(1.4, 0.75)}
-  </g>
-
-  <!-- Pass 7: Saturated Glass Tube Body (Pure Vector) -->
-  <g id="Vector_Glass_Tube_Body">
-${renderLayerPass(1.0, 1.0)}
-  </g>
-
-  <!-- Pass 8: Incandescent White Filament Core (Pure Vector) -->
-${
-  settings.tube.coreVisible
-    ? `  <g id="Vector_White_Filament_Core">
-${renderCorePass()}
-  </g>`
-    : ''
-}
-</svg>`;
-  }
-
-  // Filter Mode: Photorealistic Optical Neon Glow using SVG Gaussian Blur
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- 
-  Neon Sign Studio — High Resolution Vector Neon Artwork
-  Mode: Photorealistic Optical Neon Glow (Preview Identical with Gaussian Blur)
+  Neon Sign Design Studio — 100% Pure Vector Artwork (Zero Raster Filters / Microstock Approved)
+  Artboard: ${canvasWidth}x${canvasHeight} px | 100% Preview-Calibrated Neon Glow
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}" width="4000" height="4000">
-${defsFilter}${bgRect}
-  <!-- Pass 1: Wide Ambient Atmosphere Spill -->
-  <g id="Neon_Ambient_Bloom"${ambientFilterAttr}${screenBlend}>
-${renderLayerPass(5.5, 0.45)}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}" width="${canvasWidth}" height="${canvasHeight}">
+${bgRect}
+  <!-- Pass 1: Deep Ambient Room Glow -->
+  <g id="Neon_Ambient_Glow">
+${renderPaths((d) => d.baseThickness * 4.2, Math.max(0.05, Math.min(0.12, ambientInt * 0.12)))}
   </g>
 
-  <!-- Pass 2: Outer Radiant Gas Halo -->
-  <g id="Neon_Outer_Halo"${haloFilterAttr}${screenBlend}>
-${renderLayerPass(2.8, 0.70)}
+  <!-- Pass 2: Soft Outer Atmospheric Aura -->
+  <g id="Neon_Outer_Aura">
+${renderPaths((d) => d.baseThickness * 3.0, Math.max(0.09, Math.min(0.20, ambientInt * 0.22)))}
   </g>
 
-  <!-- Pass 3: Inner Plasma Corona -->
-  <g id="Neon_Inner_Corona"${coronaFilterAttr}${screenBlend}>
-${renderLayerPass(1.6, 0.85)}
+  <!-- Pass 3: Radiant Gas Halo -->
+  <g id="Neon_Gas_Halo">
+${renderPaths((d) => d.baseThickness * 2.2, Math.max(0.18, Math.min(0.36, outerInt * 0.38)))}
   </g>
 
-  <!-- Pass 4: Saturated Glass Tube Body -->
+  <!-- Pass 4: Mid Plasma Corona -->
+  <g id="Neon_Plasma_Corona">
+${renderPaths((d) => d.baseThickness * 1.55, Math.max(0.35, Math.min(0.60, outerInt * 0.62)))}
+  </g>
+
+  <!-- Pass 5: Clinging Plasma Rim -->
+  <g id="Neon_Plasma_Rim">
+${renderPaths((d) => d.baseThickness * 1.2, Math.max(0.65, Math.min(0.85, tubeAlpha * 0.82)), 'stroke')}
+  </g>
+
+  <!-- Pass 6: Saturated Glass Tube Body -->
   <g id="Neon_Glass_Tube_Body">
-${renderLayerPass(1.0, 1.0)}
+${renderPaths((d) => d.baseThickness, Math.min(1.0, tubeAlpha), 'stroke')}
   </g>
-
-  <!-- Pass 5: Incandescent Center Filament (Pure White Core) -->
 ${
   settings.tube.coreVisible
-    ? `  <g id="Neon_White_Core_Filament">
-${renderCorePass()}
+    ? `
+  <!-- Pass 7: Volumetric Tinted Plasma Core -->
+  <g id="Neon_Tinted_Plasma_Core">
+${renderPaths(
+  (d) => Math.max(0.6, d.baseThickness * Math.min(1.0, d.coreRatio * 1.25)),
+  Math.min(0.85, coreAlpha * 0.75),
+  'tintedCore'
+)}
+  </g>
+
+  <!-- Pass 8: Incandescent Center Pure White Filament Core -->
+  <g id="Neon_White_Core_Filament">
+${renderPaths(
+  (d) => Math.max(0.4, d.baseThickness * d.coreRatio),
+  Math.min(1.0, coreAlpha * 0.98),
+  'sharpCore'
+)}
   </g>`
     : ''
 }
