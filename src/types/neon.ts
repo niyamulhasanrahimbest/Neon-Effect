@@ -156,3 +156,22 @@ export interface ProcessedImageInfo {
   hasAlpha: boolean;
   averageLuminance: number;
 }
+
+export interface ArtboardItem {
+  id: string;
+  name: string;
+  checked: boolean;
+  imageInfo: ProcessedImageInfo | null;
+  sourceThumbnailUrl: string;
+  svgLayers: SvgPathLayer[];
+  selectedLayerIds: string[];
+  svgViewBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  settings: NeonSettings;
+  previewThumbnail?: string;
+}
+

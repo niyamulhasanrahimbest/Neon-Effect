@@ -236,11 +236,13 @@ function generateNeonSvgString(
         rawColor = primaryColor;
       }
     }
-    const strokeColor = adjustColor(rawColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness);
+    const strokeColor = layer.color
+      ? layer.color
+      : adjustColor(rawColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness);
     const rawGlowColor = layer.glowColor || rawColor;
     const glowColor = settings.color.syncGlowColor
       ? strokeColor
-      : adjustColor(rawGlowColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness);
+      : (layer.glowColor || adjustColor(rawGlowColor, settings.color.hueShift, settings.color.saturation, settings.color.brightness));
 
     const thick = layer.thickness !== undefined ? layer.thickness : settings.tube.thickness;
     const baseThickness = Math.max(0.8, thick * unitScale);
@@ -319,7 +321,10 @@ function generateNeonSvgString(
 
     const colorFactor = Math.pow(t, 1.5);
 
-    const stepPaths = layerData
+    // Render in bottom-to-top z-order so top-most layer in UI list (index 0) paints on top
+    const zOrderedLayers = [...layerData].reverse();
+
+    const stepPaths = zOrderedLayers
       .map((item) => {
         const strokeWidth = (item.baseThickness * stepMultiplier).toFixed(2);
         const color = interpolateColor(item.glowColor, item.strokeColor, colorFactor);
@@ -330,75 +335,38 @@ function generateNeonSvgString(
     glowPassesSvg.push(`    <!-- Glow Step ${i + 1}/${NUM_GLOW_STEPS} (scale=${stepMultiplier.toFixed(2)}x) -->\n    <g id="Glow_Step_${i + 1}">\n${stepPaths}\n    </g>`);
   }
 
-  // Tube body paths
-  const tubeBodyPaths = layerData
+  // Physical Neon Tubes and Incandescent Cores
+  // Rendered in bottom-to-top z-order: the top-most layer in the UI (index 0) is drawn LAST,
+  // guaranteeing that its colored tube and core pass cleanly OVER intersecting bottom strokes!
+  const zOrderedLayers = [...layerData].reverse();
+
+  const tubesAndCoresSvg = zOrderedLayers
     .map((item) => {
-      const strokeWidth = item.baseThickness.toFixed(2);
-      return `    <path d="${item.d}" fill="none" stroke="${item.strokeColor}" stroke-width="${strokeWidth}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${tubeAlpha.toFixed(2)}"${item.transformAttr} />`;
+      const originalIdx = layerData.indexOf(item);
+      const isTopLayer = originalIdx === 0;
+      // Top layer passes cleanly OVER all intersecting strokes with solid color opacity
+      const effectiveTubeAlpha = isTopLayer ? 1.0 : tubeAlpha;
+      const tubePath = `    <path d="${item.d}" fill="none" stroke="${item.strokeColor}" stroke-width="${item.baseThickness.toFixed(2)}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${effectiveTubeAlpha.toFixed(2)}"${item.transformAttr} />`;
+
+      let coreTiers = '';
+      if (settings.tube.coreVisible) {
+        const tintedWidth = Math.max(0.6, item.baseThickness * Math.min(1.0, item.coreRatio * 1.35)).toFixed(2);
+        const tintedOp = Math.min(0.85, coreAlpha * 0.75).toFixed(2);
+
+        const brightTintWidth = Math.max(0.5, item.baseThickness * Math.min(0.95, item.coreRatio * 1.15)).toFixed(2);
+        const brightTintOp = Math.min(0.92, coreAlpha * 0.88).toFixed(2);
+
+        const sharpWidth = Math.max(0.4, item.baseThickness * item.coreRatio).toFixed(2);
+        const sharpOp = Math.min(1.0, coreAlpha * (0.95 + dazzle * 0.25)).toFixed(2);
+
+        const sparkWidth = Math.max(0.25, item.baseThickness * item.coreRatio * 0.55).toFixed(2);
+
+        coreTiers = `\n    <!-- Incandescent Cores -->\n    <path d="${item.d}" fill="none" stroke="${item.tintedCoreColor}" stroke-width="${tintedWidth}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${tintedOp}"${item.transformAttr} />\n    <path d="${item.d}" fill="none" stroke="${item.brightTintCoreColor}" stroke-width="${brightTintWidth}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${brightTintOp}"${item.transformAttr} />\n    <path d="${item.d}" fill="none" stroke="${item.sharpCoreColor}" stroke-width="${sharpWidth}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${sharpOp}"${item.transformAttr} />\n    <path d="${item.d}" fill="none" stroke="#ffffff" stroke-width="${sparkWidth}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="1.0"${item.transformAttr} />`;
+      }
+
+      return `  <!-- Layer ${originalIdx + 1} (${item.strokeColor}) -->\n  <g id="Neon_Tube_Layer_${originalIdx + 1}">\n${tubePath}${coreTiers}\n  </g>`;
     })
     .join('\n');
-
-  // Incandescent white and tinted core paths
-  let coreFilamentSvg = '';
-  if (settings.tube.coreVisible) {
-    // 1. Soft tinted volumetric plasma core
-    const tintedCorePaths = layerData
-      .map((item) => {
-        const width = Math.max(0.6, item.baseThickness * Math.min(1.0, item.coreRatio * 1.35)).toFixed(2);
-        const op = Math.min(0.85, coreAlpha * 0.75).toFixed(2);
-        return `      <path d="${item.d}" fill="none" stroke="${item.tintedCoreColor}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${op}"${item.transformAttr} />`;
-      })
-      .join('\n');
-
-    // 2. High-brightness radiant pastel core
-    const brightTintPaths = layerData
-      .map((item) => {
-        const width = Math.max(0.5, item.baseThickness * Math.min(0.95, item.coreRatio * 1.15)).toFixed(2);
-        const op = Math.min(0.92, coreAlpha * 0.88).toFixed(2);
-        return `      <path d="${item.d}" fill="none" stroke="${item.brightTintCoreColor}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${op}"${item.transformAttr} />`;
-      })
-      .join('\n');
-
-    // 3. Electric pure white incandescent filament
-    const sharpCorePaths = layerData
-      .map((item) => {
-        const width = Math.max(0.4, item.baseThickness * item.coreRatio).toFixed(2);
-        const op = Math.min(1.0, coreAlpha * (0.95 + dazzle * 0.25)).toFixed(2);
-        return `      <path d="${item.d}" fill="none" stroke="${item.sharpCoreColor}" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="${op}"${item.transformAttr} />`;
-      })
-      .join('\n');
-
-    // 4. Ultra-fine laser center hot spark
-    const hotSparkPaths = layerData
-      .map((item) => {
-        const width = Math.max(0.25, item.baseThickness * item.coreRatio * 0.55).toFixed(2);
-        return `      <path d="${item.d}" fill="none" stroke="#ffffff" stroke-width="${width}" stroke-linecap="${settings.tube.lineCap}" stroke-linejoin="${settings.tube.lineJoin}" stroke-opacity="1.0"${item.transformAttr} />`;
-      })
-      .join('\n');
-
-    coreFilamentSvg = `
-  <!-- ========================================== -->
-  <!-- INCANDESCENT CORE & ELECTRICAL DISCHARGE   -->
-  <!-- ========================================== -->
-  <g id="Neon_Incandescent_Cores">
-    <!-- Tier 1: Soft Volumetric Tinted Plasma -->
-    <g id="Core_Tinted_Plasma">
-${tintedCorePaths}
-    </g>
-    <!-- Tier 2: Radiant High-Luminance Pastel Core -->
-    <g id="Core_Radiant_Pastel">
-${brightTintPaths}
-    </g>
-    <!-- Tier 3: Pure White Incandescent Hot Filament -->
-    <g id="Core_White_Hot_Filament">
-${sharpCorePaths}
-    </g>
-    <!-- Tier 4: Razor-Sharp Hot Center Discharge -->
-    <g id="Core_Hot_Center_Spark">
-${hotSparkPaths}
-    </g>
-  </g>`;
-  }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- 
@@ -416,12 +384,12 @@ ${glowPassesSvg.join('\n')}
   </g>
 
   <!-- ========================================== -->
-  <!-- PHYSICAL GLASS TUBE BODY                   -->
+  <!-- PHYSICAL GLASS TUBES & INCANDESCENT CORES  -->
+  <!-- Top-most layer in UI list passes OVER all  -->
   <!-- ========================================== -->
-  <g id="Neon_Glass_Tube_Body">
-${tubeBodyPaths}
+  <g id="Neon_Tubes_And_Cores">
+${tubesAndCoresSvg}
   </g>
-${coreFilamentSvg}
 </svg>`;
 }
 

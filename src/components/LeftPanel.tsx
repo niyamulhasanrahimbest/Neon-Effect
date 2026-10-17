@@ -26,6 +26,7 @@ import {
   Filter,
   Copy,
   ClipboardPaste,
+  Eraser,
 } from 'lucide-react';
 import { InputMode, LineArtSettings, ProcessedImageInfo, SvgPathLayer } from '../types/neon';
 import {
@@ -67,6 +68,7 @@ interface LeftPanelProps {
   activeTab: 'source' | 'layers';
   onTabChange: (tab: 'source' | 'layers') => void;
   sourceThumbnailUrl?: string;
+  onClearImage?: () => void;
 }
 
 export const LeftPanel: React.FC<LeftPanelProps> = ({
@@ -98,6 +100,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
   activeTab,
   onTabChange,
   sourceThumbnailUrl,
+  onClearImage,
 }) => {
   const isVector = imageInfo?.type === 'svg' || imageInfo?.type === 'eps' || svgLayers.length > 0;
   const layerFileInputRef = useRef<HTMLInputElement>(null);
@@ -249,6 +252,19 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
                   {svgLayers.length > 0 ? `${svgLayers.length} Vector Paths` : 'Unified Mask'}
                 </div>
               </div>
+
+              {/* IMAGE CLEAR BUTTON */}
+              {onClearImage && (imageInfo || svgLayers.length > 0) && (
+                <button
+                  type="button"
+                  onClick={onClearImage}
+                  className="w-full mt-2.5 py-1.5 px-3 bg-rose-500/15 hover:bg-rose-500/25 active:bg-rose-500/35 border border-rose-500/40 hover:border-rose-400 text-rose-300 hover:text-rose-100 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-2 group shadow-sm"
+                  title="বর্তমান আর্টবোর্ডের ইমেজ ও ভেক্টর পাথ মুছে নতুন করে শুরু করুন"
+                >
+                  <Eraser className="w-3.5 h-3.5 text-rose-400 group-hover:rotate-12 transition-transform" />
+                  <span>ইমেজ ক্লিয়ার (Clear Image)</span>
+                </button>
+              )}
             </div>
 
             {/* Input Interpretation Mode */}

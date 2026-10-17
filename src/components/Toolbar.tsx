@@ -16,12 +16,14 @@ import {
   SlidersHorizontal,
   Download,
   Zap,
-  Bookmark
+  Bookmark,
+  Eraser
 } from 'lucide-react';
 
 interface ToolbarProps {
   onOpenFile: (files: FileList | File[]) => void;
   onAddStrokeLayer: (files: FileList | File[]) => void;
+  onClearImage?: () => void;
   onSelectSample?: (sampleId: string) => void;
   canUndo: boolean;
   canRedo: boolean;
@@ -46,6 +48,7 @@ interface ToolbarProps {
 export const Toolbar: React.FC<ToolbarProps> = ({
   onOpenFile,
   onAddStrokeLayer,
+  onClearImage,
   canUndo,
   canRedo,
   onUndo,
@@ -137,6 +140,17 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             <PlusCircle className="w-3.5 h-3.5 text-emerald-400" />
             <span className="hidden lg:inline">+ Add Layer</span>
           </button>
+
+          {onClearImage && (
+            <button
+              onClick={onClearImage}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-rose-300 hover:text-white bg-rose-950/30 hover:bg-rose-900/40 border border-rose-800/60 hover:border-rose-600 rounded-md transition-colors whitespace-nowrap shrink-0"
+              title="Clear current artwork (ইমেজ ক্লিয়ার)"
+            >
+              <Eraser className="w-3.5 h-3.5 text-rose-400" />
+              <span className="hidden xl:inline">Clear Artwork</span>
+            </button>
+          )}
         </div>
       </div>
 

@@ -8,6 +8,7 @@ import { Toolbar } from './components/Toolbar';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
 import { CanvasViewport } from './components/CanvasViewport';
+import { FilmstripBar } from './components/FilmstripBar';
 import { StatusBar } from './components/StatusBar';
 import { ExportModal } from './components/ExportModal';
 import { PresetModal } from './components/PresetModal';
@@ -16,6 +17,7 @@ import {
   ProcessedImageInfo,
   SvgPathLayer,
   NeonPreset,
+  ArtboardItem,
 } from './types/neon';
 import { DEFAULT_SETTINGS } from './engine/presets';
 import { parseSvgLayers, NEON_PALETTE } from './engine/svgParser';
@@ -56,6 +58,41 @@ export default function App() {
     width: number;
     height: number;
   }>({ x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE });
+
+  // Multi-Artboard Filmstrip State
+  const [artboards, setArtboards] = useState<ArtboardItem[]>([
+    {
+      id: 'artboard-1',
+      name: 'Artboard 1',
+      checked: true,
+      imageInfo: null,
+      sourceThumbnailUrl: '',
+      svgLayers: [],
+      selectedLayerIds: [],
+      svgViewBox: { x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE },
+      settings: DEFAULT_SETTINGS,
+    },
+  ]);
+  const [activeArtboardId, setActiveArtboardId] = useState<string>('artboard-1');
+
+  // Keep active artboard in sync with live workspace
+  useEffect(() => {
+    setArtboards((prev) =>
+      prev.map((a) =>
+        a.id === activeArtboardId
+          ? {
+              ...a,
+              imageInfo,
+              sourceThumbnailUrl,
+              svgLayers,
+              selectedLayerIds,
+              svgViewBox,
+              settings,
+            }
+          : a
+      )
+    );
+  }, [activeArtboardId, imageInfo, sourceThumbnailUrl, svgLayers, selectedLayerIds, svgViewBox, settings]);
 
   // Canvases
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -791,6 +828,234 @@ export default function App() {
       handleOpenFiles(e.dataTransfer.files);
     }
   };
+
+  // --- Multi-Artboard Handlers ---
+  const handleClearActiveImage = useCallback(() => {
+    setImageInfo(null);
+    setSourceThumbnailUrl('');
+    setSvgLayers([]);
+    setSelectedLayerIds([]);
+    setSvgViewBox({ x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE });
+    if (sourceCanvasRef.current) {
+      const ctx = sourceCanvasRef.current.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
+    }
+    if (maskCanvasRef.current) {
+      const ctx = maskCanvasRef.current.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
+    }
+    if (processedCanvasRef.current) {
+      const ctx = processedCanvasRef.current.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
+    }
+    setArtboards((prev) =>
+      prev.map((a) =>
+        a.id === activeArtboardId
+          ? {
+              ...a,
+              imageInfo: null,
+              sourceThumbnailUrl: '',
+              svgLayers: [],
+              selectedLayerIds: [],
+              svgViewBox: { x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE },
+            }
+          : a
+      )
+    );
+    setRenderVersion((v) => v + 1);
+  }, [activeArtboardId]);
+
+  const handleSelectArtboard = useCallback((targetId: string) => {
+    if (targetId === activeArtboardId) return;
+    const target = artboards.find((a) => a.id === targetId);
+    if (!target) return;
+
+    setActiveArtboardId(targetId);
+    setImageInfo(target.imageInfo);
+    setSourceThumbnailUrl(target.sourceThumbnailUrl);
+    setSvgLayers(target.svgLayers);
+    setSelectedLayerIds(target.selectedLayerIds || []);
+    setSvgViewBox(target.svgViewBox || { x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE });
+    setSettings(target.settings);
+    setHistory([target.settings]);
+    setHistoryIndex(0);
+    setRenderVersion((v) => v + 1);
+  }, [activeArtboardId, artboards]);
+
+  const handleToggleCheckArtboard = useCallback((id: string) => {
+    setArtboards((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, checked: !a.checked } : a))
+    );
+  }, []);
+
+  const handleToggleCheckAll = useCallback((checked: boolean) => {
+    setArtboards((prev) => prev.map((a) => ({ ...a, checked })));
+  }, []);
+
+  const handleAddArtboard = useCallback(() => {
+    const newId = `artboard-${Date.now()}`;
+    const newIndex = artboards.length + 1;
+    const newArtboard: ArtboardItem = {
+      id: newId,
+      name: `Artboard ${newIndex}`,
+      checked: true,
+      imageInfo: null,
+      sourceThumbnailUrl: '',
+      svgLayers: [],
+      selectedLayerIds: [],
+      svgViewBox: { x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE },
+      settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
+    };
+    setArtboards((prev) => [...prev, newArtboard]);
+    setActiveArtboardId(newId);
+    setImageInfo(null);
+    setSourceThumbnailUrl('');
+    setSvgLayers([]);
+    setSelectedLayerIds([]);
+    setSvgViewBox({ x: 0, y: 0, width: ARTBOARD_SIZE, height: ARTBOARD_SIZE });
+    setSettings(DEFAULT_SETTINGS);
+    setHistory([DEFAULT_SETTINGS]);
+    setHistoryIndex(0);
+    setRenderVersion((v) => v + 1);
+  }, [artboards.length]);
+
+  const handleDuplicateArtboard = useCallback((sourceId: string) => {
+    const source = artboards.find((a) => a.id === sourceId);
+    if (!source) return;
+    const newId = `artboard-${Date.now()}`;
+    const duplicate: ArtboardItem = {
+      ...JSON.parse(JSON.stringify(source)),
+      id: newId,
+      name: `${source.name} (Copy)`,
+      checked: true,
+    };
+    setArtboards((prev) => [...prev, duplicate]);
+    setActiveArtboardId(newId);
+    setImageInfo(duplicate.imageInfo);
+    setSourceThumbnailUrl(duplicate.sourceThumbnailUrl);
+    setSvgLayers(duplicate.svgLayers);
+    setSelectedLayerIds(duplicate.selectedLayerIds || []);
+    setSvgViewBox(duplicate.svgViewBox);
+    setSettings(duplicate.settings);
+    setHistory([duplicate.settings]);
+    setHistoryIndex(0);
+    setRenderVersion((v) => v + 1);
+  }, [artboards]);
+
+  const handleDeleteArtboard = useCallback((id: string) => {
+    if (artboards.length <= 1) return;
+    const remaining = artboards.filter((a) => a.id !== id);
+    setArtboards(remaining);
+    if (activeArtboardId === id) {
+      const nextTarget = remaining[0];
+      setActiveArtboardId(nextTarget.id);
+      setImageInfo(nextTarget.imageInfo);
+      setSourceThumbnailUrl(nextTarget.sourceThumbnailUrl);
+      setSvgLayers(nextTarget.svgLayers);
+      setSelectedLayerIds(nextTarget.selectedLayerIds || []);
+      setSvgViewBox(nextTarget.svgViewBox);
+      setSettings(nextTarget.settings);
+      setHistory([nextTarget.settings]);
+      setHistoryIndex(0);
+      setRenderVersion((v) => v + 1);
+    }
+  }, [activeArtboardId, artboards]);
+
+  const handleRenameArtboard = useCallback((id: string, newName: string) => {
+    setArtboards((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, name: newName } : a))
+    );
+  }, []);
+
+  const handleUploadArtboardFiles = useCallback((files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    fileArray.forEach((file) => {
+      const fileName = file.name.toLowerCase();
+      if (fileName.endsWith('.svg') || file.type.includes('svg') || file.type.includes('xml')) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const text = e.target?.result as string;
+          if (text) {
+            try {
+              const parsed = parseSvgLayers(text);
+              const origVb = parsed.viewBox;
+              const origW = origVb.width || parsed.width || 500;
+              const origH = origVb.height || parsed.height || 500;
+              const origX = origVb.x || 0;
+              const origY = origVb.y || 0;
+              const maxOrigDim = Math.max(origW, origH);
+              const boxDim = maxOrigDim / CONTENT_FIT_RATIO;
+              const centerX = origX + origW / 2;
+              const centerY = origY + origH / 2;
+              const fittedViewBox = {
+                x: centerX - boxDim / 2,
+                y: centerY - boxDim / 2,
+                width: boxDim,
+                height: boxDim,
+              };
+
+              const newId = `artboard-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+              const newArtboard: ArtboardItem = {
+                id: newId,
+                name: file.name.replace(/\.[^/.]+$/, ''),
+                checked: true,
+                imageInfo: {
+                  width: ARTBOARD_SIZE,
+                  height: ARTBOARD_SIZE,
+                  aspectRatio: 1,
+                  type: 'svg',
+                  fileName: file.name,
+                  fileSizeFormatted: `${(file.size / 1024).toFixed(1)} KB`,
+                  hasAlpha: true,
+                  averageLuminance: 0.5,
+                },
+                sourceThumbnailUrl:
+                  'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(parsed.sanitizedSvgString),
+                svgLayers: parsed.layers,
+                selectedLayerIds: [],
+                svgViewBox: fittedViewBox,
+                settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
+              };
+
+              setArtboards((prev) => [...prev, newArtboard]);
+            } catch (err) {
+              console.error(err);
+            }
+          }
+        };
+        reader.readAsText(file);
+      } else {
+        loadSingleFile(file, false);
+      }
+    });
+  }, [loadSingleFile]);
+
+  const handleBatchExportChecked = useCallback(async () => {
+    const checkedArtboards = artboards.filter((a) => a.checked);
+    if (checkedArtboards.length === 0) return;
+
+    for (let i = 0; i < checkedArtboards.length; i++) {
+      const art = checkedArtboards[i];
+      if (art.svgLayers.length > 0) {
+        await exportArtwork(
+          null,
+          art.svgLayers,
+          art.svgViewBox,
+          ARTBOARD_SIZE,
+          ARTBOARD_SIZE,
+          art.settings,
+          {
+            format: 'svg',
+            scale: 1,
+            quality: 1,
+            includeBackground: art.settings.background.type !== 'transparent',
+            baseFileName: art.name.toLowerCase().replace(/[^a-z0-9_-]/g, '_'),
+            svgGlowType: 'vector-blend',
+          }
+        );
+      }
+    }
+  }, [artboards]);
 
   // Export Artwork handler
   const handleExport = async (options: ExportOptions) => {
