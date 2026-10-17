@@ -92,7 +92,19 @@ function drawSafeBlur(
  * Converts Hex string to RGB components.
  */
 export function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  let c = hex.replace('#', '').trim();
+  if (!hex) return { r: 0, g: 243, b: 255 };
+  const str = hex.trim();
+  if (str.startsWith('rgb')) {
+    const match = str.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (match) {
+      return {
+        r: Math.max(0, Math.min(255, parseInt(match[1], 10))),
+        g: Math.max(0, Math.min(255, parseInt(match[2], 10))),
+        b: Math.max(0, Math.min(255, parseInt(match[3], 10))),
+      };
+    }
+  }
+  let c = str.replace('#', '').trim();
   if (c.length === 3) {
     c = c.split('').map(x => x + x).join('');
   }
