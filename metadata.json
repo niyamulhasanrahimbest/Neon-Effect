@@ -1,0 +1,6 @@
+{
+  "name": "Neon Sign Design Studio",
+  "description": "Professional browser-based graphics editor that turns line art and vector illustrations into realistic neon sign artwork with multi-layered glow physics, custom backgrounds, and high-res export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
